@@ -182,7 +182,12 @@ class Store:
             if run.status == "waiting_approval":
                 run.status = "pending"
             s.commit()
-            return a
+            s.refresh(a)
+            decision = {"approval_id": a.id, "decision": a.status, "by": by, "reason": reason}
+            run_id, step = a.run_id, a.step
+        # The human decision is part of the run's audit trail, next to what the agent did.
+        self.append(run_id, "approval_decided", step, decision)
+        return a
 
     def pending_approvals(self, tenant: str | None = None) -> list[ApprovalRow]:
         with self.Session() as s:

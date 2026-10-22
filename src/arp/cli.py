@@ -69,6 +69,15 @@ def cmd_eval(a):
     from arp.eval.report import write_results
 
     print(f"wrote {write_results(res, out, prices)}")
+    from arp.eval.traces import export
+
+    print(f"wrote {export(out / 'eval.json', out)}")
+
+
+def cmd_traces(a):
+    from arp.eval.traces import export
+
+    print(f"wrote {export(Path(a.eval_json), Path(a.out))}")
 
 
 def cmd_serve(a):
@@ -101,6 +110,10 @@ def main(argv=None) -> int:
     s.add_argument("--price-in", type=float, default=0.0, help="USD per 1M input tokens (0 = local model)")
     s.add_argument("--price-out", type=float, default=0.0)
     s.set_defaults(fn=cmd_eval)
+    t = sub.add_parser("traces", help="export span trees + key events of an evaluation")
+    t.add_argument("--eval-json", default="results/eval.json")
+    t.add_argument("--out", default="results")
+    t.set_defaults(fn=cmd_traces)
     s = sub.add_parser("serve")
     s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm,v3-llm")
     s.add_argument("--host", default="127.0.0.1")

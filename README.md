@@ -46,6 +46,7 @@ screen -> classify (LocalDesk via MCP) -> plan -> policy -> [approval] -> execut
   effect re-executes with the same idempotency key, so the tool returns the stored result.
   `tests/test_recovery.py` kills the worker process (`os._exit`) right after the effect and
   checks that a second process finishes the run with exactly one ticket created.
+* **API limits**: per-key token bucket (`ARP_RATE_LIMIT_PER_MIN`, 429 + `Retry-After`), probes exempt.
 * **Security**: the model proposes, the policy engine decides (`src/arp/security/guards.py`);
   tools never take a tenant argument; per-step tool allowlists; secrets redacted before the
   model sees tool output. Threat model: [docs/SECURITY.md](docs/SECURITY.md).

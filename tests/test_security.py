@@ -88,3 +88,12 @@ def test_step_tool_allowlist_blocks_write_from_planning(p):
         planners.RulePlanner.plan = orig
     assert p.itsm.count("access") == 0
     assert "tool_blocked" in [e.type for e in p.store.events(rid)]
+
+
+def test_approval_decision_is_recorded_in_the_run_event_log(p):
+    rid = p.submit("acme", "u100", "I need access to the finance-reports folder.")
+    assert anyio.run(p.advance, rid) == "waiting_approval"
+    appr = p.store.pending_approvals("acme")[0]
+    p.store.decide(appr.id, "acme", False, "human:erin", "not justified")
+    ev = [e for e in p.store.events(rid) if e.type == "approval_decided"]
+    assert ev and ev[0].payload["decision"] == "denied" and ev[0].payload["by"] == "human:erin"

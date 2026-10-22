@@ -13,9 +13,10 @@ import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from arp.app.ratelimit import EXEMPT_PREFIXES, TokenBucketLimiter, client_id, retry_after
 from arp.telemetry import load_trace
 
 DASHBOARD = Path(__file__).with_name("dashboard.html")
@@ -41,8 +42,14 @@ def _keys() -> dict[str, tuple[str, str]]:
     return out
 
 
-def create_app(platform, keys: dict[str, tuple[str, str]] | None = None, results_dir: Path = Path("results")) -> FastAPI:
+def create_app(
+    platform,
+    keys: dict[str, tuple[str, str]] | None = None,
+    results_dir: Path = Path("results"),
+    limiter: TokenBucketLimiter | None = None,
+) -> FastAPI:
     app = FastAPI(title="Agent Reliability Platform", version="0.1.0")
+    limiter = limiter or TokenBucketLimiter(int(os.environ.get("ARP_RATE_LIMIT_PER_MIN", "120")))
     keys = keys if keys is not None else _keys()
     counters: dict[str, int] = {}
 
@@ -58,6 +65,18 @@ def create_app(platform, keys: dict[str, tuple[str, str]] | None = None, results
         if run is None or run.tenant != tenant:
             raise HTTPException(404, "run not found")
         return run
+
+    @app.middleware("http")
+    async def rate_limit(request: Request, call_next):
+        if request.url.path.startswith(EXEMPT_PREFIXES):
+            return await call_next(request)
+        host = request.client.host if request.client else None
+        wait = limiter.take(client_id(request.headers.get("x-api-key"), host))
+        if wait:
+            return JSONResponse(
+                {"detail": "rate limit exceeded"}, status_code=429, headers={"Retry-After": retry_after(wait)}
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def count(request: Request, call_next):

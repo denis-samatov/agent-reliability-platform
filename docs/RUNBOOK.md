@@ -18,6 +18,8 @@ Health: `GET /health/live`, `GET /health/ready`; metrics: `GET /metrics` (`arp_r
 | `budget_exceeded` spikes | run usage | a prompt/model change increased tokens; compare versions with `arp eval` before rollout |
 | `blocked` runs | `tool_blocked` / `policy_violation` events | investigate as a security event; check the planner version |
 | approvals pile up | `GET /v1/approvals` | approver capacity; consider lowering risk tiers only after review |
+| clients get 429 | request rate per key vs `ARP_RATE_LIMIT_PER_MIN` (default 120) | back off per `Retry-After`; probes (`/health`, `/metrics`) are never limited |
+| external Wiki tools fail (`ARP_KB_BACKEND=yandex-wiki`) | `tool_call` events with `wiki_*`, child stderr | the server process is started per run with a minimal environment; check that the `workspace` extra is installed |
 
 ## Release and rollback
 New workflow versions are registered side by side (`it-ticket@vN`); runs keep the version
