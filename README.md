@@ -26,6 +26,11 @@ ARP_LLM_BASE_URL=http://127.0.0.1:8081/v1 arp eval --versions v0-rules,v1-llm,v2
 
 ![Dashboard: a blocked injection attempt with its trace, event log, pending approval and version comparison](docs/img/dashboard.png)
 
+Containers: `ARP_API_KEYS=... docker compose up` (PostgreSQL event store + API/dashboard;
+set `ARP_LLM_BASE_URL` for the LLM planners). Verified here with the rules workflow: approval
+flow end to end, requester cannot approve its own action (403), cross-tenant read 404,
+events stored in PostgreSQL 17, read-only root FS, non-root user.
+
 ## Workflow
 
 ```
@@ -103,4 +108,4 @@ What this shows (n = 21 per version, so differences of one or two scenarios are 
 * Synthetic ITSM backend (SQLite), not a real IdP/ITSM; 21 scenarios are a regression
   suite, not a reliability estimate. No zero-error claim follows from them.
 * Injection screening is heuristic; the guarantees come from the policy and capability layers.
-* Single-machine deployment; Kubernetes manifests are not provided (not verifiable here).
+* Single-machine deployment (Compose); Kubernetes manifests are not provided (not verifiable here).

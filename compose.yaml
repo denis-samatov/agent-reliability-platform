@@ -1,0 +1,21 @@
+# Local stack: PostgreSQL for the run/event store, the platform API with the dashboard.
+# The synthetic ITSM backend (SQLite) and traces live in the `data` volume.
+# LLM planners: set ARP_LLM_BASE_URL to an OpenAI-compatible server (llama.cpp, vLLM, SGLang).
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment: {POSTGRES_USER: arp, POSTGRES_PASSWORD: arp, POSTGRES_DB: arp}
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U arp"], interval: 5s, retries: 10}
+    volumes: [pgdata:/var/lib/postgresql/data]
+  api:
+    build: .
+    environment:
+      ARP_DATABASE_URL: postgresql+psycopg://arp:arp@db:5432/arp
+      ARP_API_KEYS: ${ARP_API_KEYS:?set ARP_API_KEYS, e.g. acme-req:acme:requester,acme-appr:acme:approver}
+      ARP_LLM_BASE_URL: ${ARP_LLM_BASE_URL:-}
+    ports: ["127.0.0.1:8095:8095"]
+    volumes: [data:/data]
+    depends_on: {db: {condition: service_healthy}}
+    read_only: true
+    tmpfs: [/tmp]
+volumes: {pgdata: {}, data: {}}
