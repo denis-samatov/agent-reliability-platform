@@ -2,7 +2,8 @@
 
 * :class:`RulePlanner` (workflow ``v0-rules``): deterministic baseline - keyword rules on
   the ticket text plus the classifier category. No LLM.
-* :class:`LLMPlanner` (``v1-llm`` / ``v2-llm``): an agent loop with native tool calling.
+* :class:`LLMPlanner` (``v1-llm`` / ``v2-llm``): an agent loop with native tool calling;
+  ``v3-llm`` = prompt v2 + validation of the final proposal with a repair turn.
   The model may call read-only tools (``search_kb``, ``get_user``, ``get_groups``,
   ``get_folder``, ``check_access``) and must finish with ``propose_action``. Tool results
   are wrapped as untrusted data. The step budget bounds the loop.
@@ -48,6 +49,13 @@ PROPOSE_ACTION = {
             "required": ["action", "rationale"],
         },
     },
+}
+# Arguments each action needs; checked by the planner (v3) and again by the policy engine.
+REQUIRED_ARGS = {
+    "grant_folder_access": ("user_id", "folder"),
+    "reset_password": ("user_id",),
+    "create_ticket": ("queue", "summary"),
+    "reply_only": ("message",),
 }
 READ_TOOLS = ("search_kb", "get_user", "get_groups", "get_folder", "check_access")
 
@@ -105,12 +113,21 @@ class RulePlanner:
         )
 
 
+def missing_args(args: dict) -> list[str]:
+    return [k for k in REQUIRED_ARGS.get(args.get("action"), ()) if not str(args.get(k) or "").strip()]
+
+
 class LLMPlanner:
-    def __init__(self, llm, prompt_version: str = "v2", max_turns: int = 5):
+    """``validate=True`` (v3): an incomplete propose_action is returned to the model as a tool error
+    and the loop continues (up to ``max_turns``), instead of being passed on to the policy."""
+
+    def __init__(self, llm, prompt_version: str = "v2", max_turns: int = 5, validate: bool = False, version: str = ""):
         self.llm = llm
         self.prompt_version = prompt_version
         self.max_turns = max_turns
-        self.version = f"{prompt_version}-llm"
+        self.validate = validate
+        self.version = version or f"{prompt_version}-llm"
+        self.repairs = 0
 
     async def _tool_specs(self, ctx) -> list[dict]:
         schemas = await ctx.tools.schemas()
@@ -163,7 +180,14 @@ class LLMPlanner:
             for i, call in enumerate(out["tool_calls"]):
                 cid = call["id"] or f"call{turn}{i}"
                 if call["name"] == "propose_action":
-                    return Plan(_clean_action(call["arguments"]), called, turn)
+                    action = _clean_action(call["arguments"])
+                    missing = missing_args(action) if self.validate else []
+                    if not missing or turn == self.max_turns:
+                        return Plan(action, called, turn)
+                    self.repairs += 1
+                    result = {"error": f"invalid propose_action: {action.get('action')} requires {', '.join(missing)}"}
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": json.dumps(result)})
+                    break
                 if call["name"] not in READ_TOOLS:
                     result = {"error": f"tool {call['name']} is not available"}
                 else:

@@ -85,6 +85,10 @@ def evaluate_action(
             return Decision(False, False, "medium", f"unknown queue {action.get('queue')!r}")
         return Decision(True, False, "low", "escalation to a human queue")
     target = action.get("user_id")
+    if not target:
+        return Decision(False, False, "medium", "invalid action: missing user_id")
+    if kind == "grant_folder_access" and not action.get("folder"):
+        return Decision(False, False, "medium", "invalid action: missing folder")
     if kind == "reset_password":
         if target != requester:
             return Decision(False, False, "high", "password reset only for the requester's own account")

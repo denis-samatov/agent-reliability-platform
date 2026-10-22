@@ -1,8 +1,8 @@
-"""The IT-ticket workflow (three versions sharing the same durable skeleton).
+"""The IT-ticket workflow (four versions sharing the same durable skeleton).
 
     screen -> classify -> plan -> policy -> approval -> execute -> verify -> notify -> finalize
 
-* ``plan`` is the only step that differs between versions (rules / LLM prompt v1 / v2).
+* ``plan`` is the only step that differs between versions (rules / LLM prompt v1 / v2 / v2 + proposal validation = v3).
 * ``policy`` turns a disallowed proposal into an escalation to the security queue (the
   forbidden effect never happens; the event log records the violation).
 * ``approval`` parks the run for significant actions; a denial skips to ``notify``.
@@ -162,8 +162,14 @@ async def finalize_step(ctx) -> dict:
 
 
 def build_workflow(version: str, llm=None, model_fingerprint: dict | None = None) -> Workflow:
-    planner = RulePlanner() if version == "v0-rules" else LLMPlanner(llm, prompt_version=version.split("-")[0])
     from arp.agent.planners import PROMPTS
+
+    if version == "v0-rules":
+        planner = RulePlanner()
+    elif version == "v3-llm":
+        planner = LLMPlanner(llm, prompt_version="v2", validate=True, version="v3-llm")
+    else:
+        planner = LLMPlanner(llm, prompt_version=version.split("-")[0])
 
     tool_retry = RetryPolicy(max_attempts=3, base_delay_s=0.05)
     steps = [
@@ -186,7 +192,8 @@ def build_workflow(version: str, llm=None, model_fingerprint: dict | None = None
     ]
     config = {
         "planner": planner.version,
-        "prompt": PROMPTS.get(version.split("-")[0]) if version != "v0-rules" else None,
+        "prompt": PROMPTS.get(getattr(planner, "prompt_version", "")),
+        "validate_proposal": getattr(planner, "validate", False),
         "model": model_fingerprint,
         "step_tools": {k: sorted(v) for k, v in STEP_TOOLS.items()},
     }

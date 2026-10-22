@@ -25,7 +25,7 @@ class PlatformConfig:
     db_url: str = os.environ.get("ARP_DATABASE_URL", "sqlite:///./arp.db")
     itsm_path: str = os.environ.get("ARP_ITSM_PATH", "./itsm.db")
     trace_dir: Path = Path(os.environ.get("ARP_TRACE_DIR", "./traces"))
-    versions: tuple[str, ...] = ("v0-rules", "v1-llm", "v2-llm")
+    versions: tuple[str, ...] = ("v0-rules", "v1-llm", "v2-llm", "v3-llm")
     llm_base_url: str | None = os.environ.get("ARP_LLM_BASE_URL")
     prices: Prices = field(default_factory=Prices)
     max_running_per_tenant: int = 4

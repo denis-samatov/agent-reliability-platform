@@ -3,7 +3,7 @@
 arp submit --tenant acme --requester u100 --version v2-llm "ticket text"
 arp advance RUN_ID            # advance one run (used by tests to run in a separate process)
 arp worker                    # poll runnable runs forever
-arp eval --versions v0-rules,v1-llm,v2-llm
+arp eval --versions v0-rules,v1-llm,v2-llm,v3-llm
 arp serve                     # dashboard + API
 """
 
@@ -92,17 +92,17 @@ def main(argv=None) -> int:
     s.add_argument("run_id")
     s.set_defaults(fn=cmd_advance)
     s = sub.add_parser("worker")
-    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm")
+    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm,v3-llm")
     s.add_argument("--poll", type=float, default=1.0)
     s.set_defaults(fn=cmd_worker)
     s = sub.add_parser("eval")
-    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm")
+    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm,v3-llm")
     s.add_argument("--workdir", default="eval-work")
     s.add_argument("--price-in", type=float, default=0.0, help="USD per 1M input tokens (0 = local model)")
     s.add_argument("--price-out", type=float, default=0.0)
     s.set_defaults(fn=cmd_eval)
     s = sub.add_parser("serve")
-    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm")
+    s.add_argument("--versions", default="v0-rules,v1-llm,v2-llm,v3-llm")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8095)
     s.set_defaults(fn=cmd_serve)
