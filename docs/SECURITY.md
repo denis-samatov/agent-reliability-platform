@@ -9,6 +9,7 @@
 | Write tool used during planning | compromised planner calls `grant_folder_access` | per-step tool allowlist -> run `blocked` | `test_step_tool_allowlist_blocks_write_from_planning` |
 | Secret leakage | temporary password returned by `reset_password` | redaction before the model sees tool output and before messages/events | `test_secrets_never_reach_user_messages_or_events` |
 | Runaway cost / loops | agent keeps calling tools | token / tool-call / LLM-call / wall / cost budgets | `test_budget_exceeded_stops_before_side_effects`, eval S19/S20 |
+| Over-privileged or leaky external tool server | Wiki MCP server exposes write tools; platform secrets in its environment | only routed tools reachable (2 of 11); server itself read-only; child process gets an allowlisted environment; upstream path policy | `tests/test_external_mcp.py` (ADR-A5) |
 | Duplicate side effects on retry or crash | worker dies after the grant | idempotency keys derived from (run, step) | `test_recovery.py` |
 
 Residual risks: heuristic screening misses novel phrasings (it is only a flag); the policy

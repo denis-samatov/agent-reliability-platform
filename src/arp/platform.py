@@ -27,6 +27,9 @@ class PlatformConfig:
     trace_dir: Path = Path(os.environ.get("ARP_TRACE_DIR", "./traces"))
     versions: tuple[str, ...] = ("v0-rules", "v1-llm", "v2-llm", "v3-llm")
     llm_base_url: str | None = os.environ.get("ARP_LLM_BASE_URL")
+    # "local": built-in runbook search; "yandex-wiki": the same runbooks served as Wiki pages by
+    # the yandex-workspace-mcp server in a separate process (ADR-A5).
+    kb_backend: str = os.environ.get("ARP_KB_BACKEND", "local")
     prices: Prices = field(default_factory=Prices)
     max_running_per_tenant: int = 4
     lease_s: float = 30.0
@@ -49,6 +52,13 @@ class Platform:
             mc = ModelConfig(base_url=cfg.llm_base_url)
             self.llm = ChatLLM(mc)
             fingerprint = mc.fingerprint()
+        if cfg.kb_backend not in ("local", "yandex-wiki"):
+            raise ValueError(f"unknown ARP_KB_BACKEND {cfg.kb_backend!r}")
+        self.external = ()
+        if cfg.kb_backend == "yandex-wiki":
+            from arp.tools.external import yandex_wiki_server
+
+            self.external = (yandex_wiki_server(),)
         self.workflows = {}
         for v in cfg.versions:
             if v != "v0-rules" and self.llm is None:
@@ -75,6 +85,7 @@ class Platform:
             tracer,
             STEP_TOOLS,
             timeout_s=self.cfg.tool_timeout_s,
+            external=self.external,
         )
         ctx = RunContext(
             run.id,

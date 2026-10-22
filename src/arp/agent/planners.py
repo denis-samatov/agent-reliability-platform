@@ -57,7 +57,9 @@ REQUIRED_ARGS = {
     "create_ticket": ("queue", "summary"),
     "reply_only": ("message",),
 }
-READ_TOOLS = ("search_kb", "get_user", "get_groups", "get_folder", "check_access")
+READ_TOOLS = ("search_kb", "get_user", "get_groups", "get_folder", "check_access", "wiki_search", "wiki_get_page")
+# With an external Wiki attached, it replaces the built-in runbook search for the planner.
+KB_ALTERNATIVES = {"search_kb": "wiki_search"}
 
 PROMPTS = {
     "v1": (
@@ -86,6 +88,21 @@ class RulePlanner:
     version = "v0-rules"
 
     async def plan(self, ctx, ticket: str, category: str) -> Plan:
+        plan = await self._plan(ctx, ticket, category)
+        if "wiki_search" in await ctx.tools.schemas():
+            await self._attach_runbook(ctx, ticket, plan)
+        return plan
+
+    async def _attach_runbook(self, ctx, ticket: str, plan: Plan) -> None:
+        """Cite the best-matching Wiki runbook in the rationale (documentation lookup step)."""
+        hits = (await ctx.tools.call("wiki_search", {"query": ticket[:200], "limit": 3})).get("results", [])
+        plan.tools_called.append("wiki_search")
+        if hits and hits[0].get("locator"):
+            page = await ctx.tools.call("wiki_get_page", {"slug": hits[0]["locator"]})
+            plan.tools_called.append("wiki_get_page")
+            plan.action["rationale"] = f"{plan.action.get('rationale', '')}; runbook {page.get('slug')}: {page.get('title')}"
+
+    async def _plan(self, ctx, ticket: str, category: str) -> Plan:
         t = ticket.lower()
         user = ctx.requester
         called = []
@@ -133,6 +150,8 @@ class LLMPlanner:
         schemas = await ctx.tools.schemas()
         specs = []
         for name in READ_TOOLS:
+            if name in KB_ALTERNATIVES and KB_ALTERNATIVES[name] in schemas:
+                continue
             if name in schemas:
                 specs.append(
                     {

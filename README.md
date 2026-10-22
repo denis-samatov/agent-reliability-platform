@@ -9,14 +9,14 @@ failure-injection suite.**
 | **Problem** | Agents connected to company systems fail half-way, duplicate side effects on retry, get redirected by text in tickets or wiki pages, and cannot be compared across prompt versions. |
 | **For** | Enterprise AI / platform teams (e.g. a cloud or IT-operations group running many agents). |
 | **What** | A durable workflow engine (event log, leases, replay), MCP tool servers built per principal (tenant isolation, scopes), a policy engine and redaction, human approvals, budgets, compensation, OpenTelemetry traces, a dashboard, and an evaluation suite of 21 scenarios run against four workflow versions. |
-| **Reuses** | [`localdesk`](https://github.com/denis-samatov/localdesk) (calibrated ticket classifier, from PyPI) as a tool; [`mcp-capguard`](https://github.com/denis-samatov/mcp-capguard) to test the tool-exposure boundary per principal; MCP Python SDK 2.3. |
-| **Status** | 29 tests (unit, integration, a real worker-process kill, API tenant isolation). LLM versions use a local Qwen3-1.7B on CPU; see [results/EVAL.md](results/EVAL.md). |
+| **Reuses** | [`localdesk`](https://github.com/denis-samatov/localdesk) (calibrated ticket classifier, from PyPI) as a tool; [`yandex-workspace-mcp`](https://github.com/denis-samatov/yandex-workspace-mcp) as an external read-only Wiki server; [`mcp-capguard`](https://github.com/denis-samatov/mcp-capguard) to test the tool-exposure boundary per principal; MCP Python SDK 2.3. |
+| **Status** | 34 tests (unit, integration, a real worker-process kill, API tenant isolation). LLM versions use a local Qwen3-1.7B on CPU; see [results/EVAL.md](results/EVAL.md). |
 
 ## Run it
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                                   # 29 tests, no LLM needed
+pytest -q                                   # 34 tests, no LLM needed
 export ARP_API_KEYS="acme-req:acme:requester,acme-appr:acme:approver"
 arp serve                                   # dashboard at http://127.0.0.1:8095 (paste a key)
 # Optional LLM planner: llama.cpp server with tool-call templates
@@ -49,6 +49,10 @@ screen -> classify (LocalDesk via MCP) -> plan -> policy -> [approval] -> execut
 * **Security**: the model proposes, the policy engine decides (`src/arp/security/guards.py`);
   tools never take a tenant argument; per-step tool allowlists; secrets redacted before the
   model sees tool output. Threat model: [docs/SECURITY.md](docs/SECURITY.md).
+* **External MCP servers**: with `ARP_KB_BACKEND=yandex-wiki` the workflow reads runbooks from
+  [`yandex-workspace-mcp`](https://github.com/denis-samatov/yandex-workspace-mcp) running as a
+  separate process (stdio, minimal environment, synthetic Wiki). Only two read tools are routed;
+  the same policy, screening and tracing apply ([ADR-A5](docs/adr/ADR-A5-external-mcp-yandex-workspace.md)).
 * **Observability**: one OpenTelemetry trace per run across pauses/resumes; GenAI semantic
   convention attributes on LLM spans; per-run token/tool/cost usage; Prometheus-style `/metrics`.
 

@@ -25,7 +25,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mcp-capguard @ git+https://github.com/denis-samatov/mcp-capguard.git"]
+# yandex-workspace-mcp as an external, read-only Wiki tool server (ADR-A5); pinned to a commit.
+workspace = ["yandex-workspace-mcp @ git+https://github.com/denis-samatov/yandex-workspace-mcp.git@92d9c305e079c313fcf28310ee96d0bce51b5c05"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mcp-capguard @ git+https://github.com/denis-samatov/mcp-capguard.git",
+  "agent-reliability-platform[workspace]",
+]
 
 [project.scripts]
 arp = "arp.cli:main"
