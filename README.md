@@ -28,7 +28,7 @@ ARP_LLM_BASE_URL=http://127.0.0.1:8081/v1 arp eval --versions v0-rules,v1-llm,v2
 
 Containers: `ARP_API_KEYS=... docker compose up` (PostgreSQL event store + API/dashboard;
 set `ARP_LLM_BASE_URL` for the LLM planners). Verified here with the rules workflow: approval
-flow end to end, requester cannot approve its own action (403), cross-tenant read 404,
+flow end to end, a requester-role key cannot approve (403), cross-tenant read 404,
 events stored in PostgreSQL 17, read-only root FS, non-root user.
 
 ## Workflow
