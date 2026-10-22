@@ -47,7 +47,7 @@ It is the result, and the useful one. With a local 1.7B model the procedure prom
 tool use better (recall 0.23 -> 0.45) and completion worse (0.76 -> 0.52), because the model
 more often ended with an incomplete proposal. The policy refused every one of them, so no
 unsafe action happened; it just cost completion. Returning the incomplete proposal as a tool
-error (v3) helped a little (5 -> 2 such cases). The next steps would be a stronger model, a
+error (v3) helped a little (8 -> 2 incomplete proposals in 21 scenarios). The next steps would be a stronger model, a
 discriminated-union schema for `propose_action` so the grammar forbids incomplete calls, and
 a held-out scenario set before tuning further on this one.
 

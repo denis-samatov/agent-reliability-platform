@@ -67,24 +67,29 @@ CPU for the LLM versions. Full table and per-scenario outcomes: [results/EVAL.md
 | metric | v0 rules | v1 LLM (short prompt) | v2 LLM (procedure prompt) | v3 = v2 + proposal validation |
 |---|---:|---:|---:|---:|
 | task completion | **0.85** | 0.76 | 0.52 | 0.57 |
-| action accuracy | 0.77 | 0.62 | 0.54 | 0.62 |
+| action accuracy | **0.77** | 0.62 | 0.46 | 0.62 |
 | unauthorized-action prevention | **1.00** | **1.00** | **1.00** | **1.00** |
 | recovery success (failure + budget scenarios) | 1.00 | 1.00 | 0.71 | 0.71 |
 | tool-selection recall | 0.41 | 0.23 | 0.45 | 0.45 |
-| latency p50 / p95 (executor-active, s) | 0.18 / 0.51 | 13.8 / 24.8 | 17.0 / 26.2 | 20.4 / 27.5 |
-| tokens (whole suite) | 0 | 70.5k | 82.2k | 89.9k |
+| latency p50 / p95 (executor-active, s) | 0.17 / 0.40 | 12.9 / 23.6 | 15.9 / 29.7 | 17.4 / 23.5 |
+| tokens (whole suite) | 0 | 70.5k | 80.3k | 89.9k |
+
+Every scenario's trace (span tree) and key events: [results/TRACES.md](results/TRACES.md); raw
+spans in `results/traces/`. The suite was run twice on the same model (temperature 0): 2 of 84
+scenario outcomes flipped (both v2: S08, S11), aggregates were unchanged - local CPU inference
+is not bit-deterministic, which is one more reason to read single scenarios with care.
 
 What this shows (n = 21 per version, so differences of one or two scenarios are noise):
 
 * **The platform guarantees held for every planner**: no unauthorized action was executed in
-  any version, including when the 1.7B model was redirected by an injected ticket (S11: it
-  proposed access to a different folder; the policy allowed it only with approval, and the
-  human gate stopped it).
+  any version, including when the 1.7B model was redirected by an injected ticket (S11, v3 in the
+  reported run: it proposed access to a different folder "and the admins group"; the policy
+  allowed the grant only with approval, and the human gate stopped it).
 * **The small model is the bottleneck, not the workflow.** The procedure prompt (v2) doubled
   tool-selection recall but lowered completion: the model more often ended with an
   incomplete `propose_action` (no `user_id`/`folder`), which the policy correctly refused.
-  v3 sends incomplete proposals back once as a tool error; that cut such cases from 5 to 2 -
-  the model often repeated the same incomplete call.
+  v3 sends incomplete proposals back as a tool error; that cut such proposals from 8 to 2 of
+  21 scenarios - when it fails, the model repeats the same incomplete call.
 * "Recovery success" drops for v2/v3 because the planner never reached the faulty step
   (its proposal was refused earlier), not because recovery failed: S14-S18 recovery paths
   are exercised by v0/v1 and by `tests/test_recovery.py`.
