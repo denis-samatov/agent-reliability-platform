@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Reliability Platform</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#e4e7ec; --accent:#2f6fde; --ok:#067647; --warn:#b54708; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; gap:12px; align-items:center; padding:12px 20px; background:var(--card); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; } main { display:grid; grid-template-columns: 420px 1fr; gap:16px; padding:16px 20px; }
+  @media (max-width:1000px) { main { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:14px; }
+  h2 { font-size:12px; text-transform:uppercase; color:var(--muted); letter-spacing:.04em; margin:0 0 8px; }
+  input, select, textarea, button { font:inherit; } textarea, input[type=text], input[type=password], select { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:5px 10px; cursor:pointer; } button.sec { background:#eef2f6; color:var(--ink); }
+  table { border-collapse:collapse; width:100%; } td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; font-size:13px; }
+  tr.click:hover { background:#f2f5fb; cursor:pointer; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:10px; background:#eef2f6; white-space:nowrap; }
+  .succeeded { background:#dcfae6; color:var(--ok); } .waiting_approval, .pending { background:#fef0c7; color:var(--warn); }
+  .failed, .blocked, .budget_exceeded, .cancelled, .rejected { background:#fee4e2; color:var(--bad); }
+  .bar { position:relative; height:16px; background:#f2f4f7; border-radius:3px; }
+  .bar span { position:absolute; top:0; height:16px; border-radius:3px; background:#7aa2ef; }
+  .bar span.err { background:#f97066; } .bar span.tool { background:#32d583; } .bar span.llm { background:#b692f6; }
+  .muted { color:var(--muted); } pre { white-space:pre-wrap; margin:0; font-size:12px; }
+</style>
+</head>
+<body>
+<header><h1>Agent Reliability Platform</h1><span class="muted">IT-ticket workflow · synthetic tenants acme / globex</span>
+  <span style="flex:1"></span><input id="key" type="password" placeholder="API key" style="width:220px"><button class="sec" onclick="load()">Refresh</button></header>
+<main>
+<section>
+  <div class="card"><h2>New ticket</h2>
+    <div style="display:flex; gap:6px; margin-bottom:6px"><input id="req" type="text" value="u100" style="width:90px">
+      <select id="ver"><option>v0-rules</option><option>v1-llm</option><option selected>v2-llm</option></select></div>
+    <textarea id="ticket" rows="3">I need access to the finance-reports folder.</textarea>
+    <div style="margin-top:6px"><button onclick="submitTicket()">Submit and run</button> <span id="msg" class="muted"></span></div></div>
+  <div class="card"><h2>Approvals</h2><div id="approvals" class="muted">-</div></div>
+  <div class="card"><h2>Runs</h2><table id="runs"></table></div>
+  <div class="card"><h2>Version comparison (eval suite)</h2><div id="eval" class="muted">-</div></div>
+</section>
+<section><div class="card" id="detail"><h2>Run</h2><p class="muted">Select a run.</p></div></section>
+</main>
+<script>
+const H = () => ({ 'X-API-Key': document.getElementById('key').value, 'Content-Type': 'application/json' });
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(p, o={}) { const r = await fetch(p, { ...o, headers: H() }); if (!r.ok) throw new Error(r.status + ' ' + await r.text()); return r.json(); }
+async function submitTicket() {
+  try { const r = await api('/v1/runs', { method:'POST', body: JSON.stringify({ requester: req.value, ticket: ticket.value, version: ver.value }) });
+        msg.textContent = 'running ' + r.run_id.slice(0,8) + '...'; const s = await api(`/v1/runs/${r.run_id}/advance`, { method:'POST' });
+        msg.textContent = s.status; load(); show(r.run_id); } catch (e) { msg.textContent = e.message; }
+}
+async function decide(id, approve) { try { await api(`/v1/approvals/${id}/decision`, { method:'POST', body: JSON.stringify({ approve }) }); load(); } catch (e) { alert(e.message); } }
+async function load() {
+  try {
+    const rs = await api('/v1/runs');
+    runs.innerHTML = '<tr><th>run</th><th>version</th><th>status</th><th>ticket</th></tr>' + rs.map(r => `<tr class="click" onclick="show('${r.run_id}')"><td>${r.run_id.slice(0,8)}</td><td>${esc(r.version)}</td><td><span class="pill ${r.status}">${r.status}</span></td><td>${esc(r.ticket)}</td></tr>`).join('');
+    const ap = await api('/v1/approvals');
+    approvals.innerHTML = ap.length ? ap.map(a => `<div style="margin-bottom:6px"><b>${esc(a.action.action)}</b> ${esc(JSON.stringify(a.action))}<br>
+      <button onclick="decide(${a.approval_id}, true)">Approve</button> <button class="sec" onclick="decide(${a.approval_id}, false)">Deny</button></div>`).join('') : 'none pending';
+  } catch (e) { runs.innerHTML = '<tr><td class="muted">' + esc(e.message) + '</td></tr>'; }
+  try { const ev = await api('/v1/eval'); const keys = ['task_completion','action_accuracy','unauthorized_action_prevention','recovery_success','tool_selection_recall','active_s_p50','active_s_p95','tokens_total'];
+        eval.innerHTML = '<table><tr><th>metric</th>' + Object.keys(ev).map(v => `<th>${esc(v)}</th>`).join('') + '</tr>' + keys.map(k => `<tr><td>${k}</td>` + Object.values(ev).map(s => `<td>${s[k] == null ? '-' : (typeof s[k] === 'number' ? (+s[k]).toFixed(3) : esc(s[k]))}</td>`).join('') + '</tr>').join('') + '</table>'; }
+  catch (e) { eval.textContent = 'no eval results yet'; }
+}
+async function show(id) {
+  const d = await api('/v1/runs/' + id);
+  const t0 = Math.min(...d.trace.map(s => s.start_ns)), t1 = Math.max(...d.trace.map(s => s.end_ns));
+  const span = t1 - t0 || 1;
+  const bars = d.trace.map(s => { const cls = s.status === 'ERROR' ? 'err' : s.name.startsWith('tool.') ? 'tool' : s.name.startsWith('gen_ai') ? 'llm' : '';
+    return `<tr><td style="width:40%">${esc(s.name)}</td><td><div class="bar"><span class="${cls}" style="left:${(s.start_ns - t0) / span * 100}%; width:${Math.max(0.5, (s.end_ns - s.start_ns) / span * 100)}%"></span></div></td><td class="muted">${((s.end_ns - s.start_ns)/1e6).toFixed(1)} ms</td></tr>`; }).join('');
+  const evs = d.events.map(e => `<tr><td>${e.seq}</td><td>${esc(e.type)}</td><td>${esc(e.step||'')}</td><td><pre>${esc(JSON.stringify(e.payload).slice(0,300))}</pre></td></tr>`).join('');
+  detail.innerHTML = `<h2>Run ${esc(d.run_id)}</h2><p><span class="pill ${d.status}">${d.status}</span> ${esc(d.version)} <span class="muted">hash ${esc(d.version_hash)}</span></p>
+    <p>${esc(d.input.ticket)}</p><p class="muted">usage ${esc(JSON.stringify(d.usage))} · flags ${esc(d.flags.join(', ') || '-')}</p>
+    ${d.error ? '<p style="color:var(--bad)">' + esc(d.error) + '</p>' : ''}
+    <h2>Trace (OpenTelemetry spans)</h2><table>${bars}</table><h2 style="margin-top:12px">Output</h2><pre>${esc(JSON.stringify(d.output, null, 1))}</pre>
+    <h2 style="margin-top:12px">Event log</h2><table>${evs}</table>`;
+}
+</script>
+</body>
+</html>
