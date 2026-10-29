@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from arp.app.ratelimit import EXEMPT_PREFIXES, TokenBucketLimiter, client_id, retry_after
 from arp.telemetry import load_trace
@@ -33,31 +34,35 @@ class Decision(BaseModel):
     reason: str = Field("", max_length=500)
 
 
-def _keys() -> dict[str, tuple[str, str]]:
+def _keys() -> dict[str, tuple[str, str] | tuple[str, str, str]]:
     raw = os.environ.get("ARP_API_KEYS", "")
     out = {}
     for item in filter(None, raw.split(",")):
-        key, tenant, role = item.split(":")
-        out[key] = (tenant, role)
+        key, tenant, role, *subject = item.split(":")
+        if role not in {"requester", "approver"} or len(subject) > 1 or (subject and not subject[0]):
+            raise ValueError("expected key:tenant:requester|approver[:subject]")
+        out[key] = (tenant, role, subject[0]) if subject else (tenant, role)
     return out
 
 
 def create_app(
     platform,
-    keys: dict[str, tuple[str, str]] | None = None,
+    keys: dict[str, tuple[str, str] | tuple[str, str, str]] | None = None,
     results_dir: Path = Path("results"),
     limiter: TokenBucketLimiter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Agent Reliability Platform", version="0.1.0")
     limiter = limiter or TokenBucketLimiter(int(os.environ.get("ARP_RATE_LIMIT_PER_MIN", "120")))
     keys = keys if keys is not None else _keys()
+    if any(not key for key in keys):
+        raise ValueError("API keys must not be empty")
     counters: dict[str, int] = {}
 
-    def principal(request: Request) -> tuple[str, str]:
+    def principal(request: Request) -> tuple[str, str, str | None]:
         given = request.headers.get("x-api-key", "")
         for k, v in keys.items():
             if hmac.compare_digest(given.encode(), k.encode()):
-                return v
+                return (*v, None) if len(v) == 2 else v
         raise HTTPException(401, "invalid API key")
 
     def own_run(run_id: str, tenant: str):
@@ -91,6 +96,11 @@ def create_app(
 
     @app.get("/health/ready")
     def ready():
+        try:
+            with platform.store.engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise HTTPException(503, "database unavailable") from exc
         return {"status": "ready", "workflows": sorted(platform.workflows)}
 
     @app.get("/metrics", response_class=PlainTextResponse)
@@ -109,7 +119,9 @@ def create_app(
 
     @app.post("/v1/runs", status_code=202)
     def submit(t: Ticket, who=Depends(principal)):
-        tenant, _ = who
+        tenant, _, subject = who
+        if subject is not None and subject != t.requester:
+            raise HTTPException(403, "requester does not match authenticated subject")
         if f"it-ticket@{t.version}" not in platform.workflows:
             raise HTTPException(422, f"unknown workflow version {t.version}")
         return {"run_id": platform.submit(tenant, t.requester, t.ticket, t.version)}
@@ -121,10 +133,8 @@ def create_app(
 
     @app.post("/v1/runs/{run_id}/cancel")
     def cancel(run_id: str, who=Depends(principal)):
-        run = own_run(run_id, who[0])
-        platform.store.update_run(
-            run_id, cancel_requested=True, status="pending" if run.status == "waiting_approval" else run.status
-        )
+        own_run(run_id, who[0])
+        platform.store.request_cancel(run_id)
         return {"cancel_requested": True}
 
     @app.get("/v1/runs")
@@ -172,11 +182,11 @@ def create_app(
 
     @app.post("/v1/approvals/{approval_id}/decision")
     async def decide(approval_id: int, d: Decision, who=Depends(principal)):
-        tenant, role = who
+        tenant, role, subject = who
         if role != "approver":
             raise HTTPException(403, "approver role required")
         try:
-            a = platform.store.decide(approval_id, tenant, d.approve, f"human:{tenant}-approver", d.reason)
+            a = platform.store.decide(approval_id, tenant, d.approve, f"human:{subject or tenant + '-approver'}", d.reason)
         except KeyError as e:
             raise HTTPException(404, "approval not found") from e
         except ValueError as e:

@@ -108,10 +108,8 @@ def test_cancellation_while_waiting(make):
 
 def test_cancellation_after_side_effect_compensates(make):
     p = make()
-    rid = p.submit("acme", "u100", "I need access to the finance-reports folder.")
-    run(p, rid)
-    approve(p, "acme")
-    # Let execute run, then request cancellation before verify.
+    # Freeze the fault-injected workflow before submission: changing code during
+    # an approval pause is separately rejected by the immutable-resume contract.
     wf = p.workflows["it-ticket@v0-rules"]
     original = next(s for s in wf.steps if s.name == "execute").fn
 
@@ -121,6 +119,9 @@ def test_cancellation_after_side_effect_compensates(make):
         return out
 
     next(s for s in wf.steps if s.name == "execute").fn = execute_then_cancel
+    rid = p.submit("acme", "u100", "I need access to the finance-reports folder.")
+    run(p, rid)
+    approve(p, "acme")
     assert run(p, rid) == "cancelled"
     assert "compensated" in types(p, rid)
     assert p.itsm.count("access", user_id="u100") == 0

@@ -26,13 +26,14 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import anyio
 
 from arp.engine.budget import Budget, BudgetExceeded
-from arp.engine.store import TERMINAL, Store
+from arp.engine.store import TERMINAL, FencedStore, LeaseLost, Store
 
 
 class TransientError(RuntimeError):
@@ -109,9 +110,54 @@ class Workflow:
     def version_hash(self) -> str:
         import inspect
         import json
+        import sys
+        from importlib import metadata
+        from pathlib import Path
 
-        src = "".join(inspect.getsource(s.fn) for s in self.steps)
-        return hashlib.sha256((src + json.dumps(self.config, sort_keys=True, default=str)).encode()).hexdigest()[:16]
+        # Read metadata on each comparison: caching would hide an environment
+        # upgrade while a durable run is paused. Missing optional packages are
+        # represented explicitly and deterministically rather than omitted.
+        distributions = {}
+        for name in (
+            "mcp",
+            "mcp-types",
+            "anyio",
+            "pydantic",
+            "pydantic-core",
+            "sqlalchemy",
+            "psycopg",
+            "psycopg-binary",
+            "httpx",
+            "httpx2",
+            "localdesk",
+            "numpy",
+            "scipy",
+            "scikit-learn",
+            "joblib",
+            "fastapi",
+            "starlette",
+            "uvicorn",
+            "opentelemetry-api",
+            "opentelemetry-sdk",
+            "opentelemetry-semantic-conventions",
+        ):
+            try:
+                distributions[name] = metadata.version(name)
+            except metadata.PackageNotFoundError:
+                distributions[name] = None
+        runtime = {
+            "implementation": sys.implementation.name,
+            "python": sys.version,
+            "distributions": distributions,
+        }
+        package = Path(__file__).resolve().parents[1]
+        src = "".join(
+            p.relative_to(package).as_posix() + p.read_text(encoding="utf-8") for p in sorted(package.rglob("*.py"))
+        )
+        src += "".join(inspect.getsource(s.fn) for s in self.steps)
+        return hashlib.sha256(
+            (src + json.dumps({"config": self.config, "runtime": runtime}, sort_keys=True, default=str)).encode()
+        ).hexdigest()[:16]
 
 
 class Executor:
@@ -128,6 +174,8 @@ class Executor:
         self.workflows = workflows
         self.context_factory = context_factory  # (run, workflow) -> RunContext
         self.owner = owner
+        if lease_s <= 0:
+            raise ValueError("lease_s must be positive")
         self.lease_s = lease_s
         self.max_running = max_running_per_tenant
 
@@ -140,18 +188,52 @@ class Executor:
             return run.status if run else "missing"
         if run.status == "pending" and self.store.running_count(run.tenant) >= self.max_running:
             return "throttled"
-        if not self.store.acquire_lease(run_id, self.owner, self.lease_s):
+        # Filesystem/metadata reads can be slow; finish the invocation's fresh
+        # identity check before claiming a lease that requires timely heartbeat.
+        version_hash = await anyio.to_thread.run_sync(lambda: self._wf(run).version_hash)
+        token = uuid.uuid4().hex
+        if not self.store.acquire_lease(run_id, token, self.lease_s):
             return "locked"
+        lost = False
+        status = "locked"
         try:
-            return await self._advance(run_id)
-        finally:
-            self.store.release_lease(run_id, self.owner)
+            with anyio.CancelScope() as scope:
+                async with anyio.create_task_group() as tasks:
 
-    async def _advance(self, run_id: str) -> str:
+                    async def heartbeat():
+                        nonlocal lost
+                        while True:
+                            await anyio.sleep(max(0.01, self.lease_s / 3))
+                            try:
+                                renewed = self.store.renew_lease(run_id, token, self.lease_s)
+                            except Exception:  # DB outage must stop an unfenced executor.
+                                renewed = False
+                            if not renewed:
+                                lost = True
+                                scope.cancel()
+                                return
+
+                    tasks.start_soon(heartbeat)
+                    try:
+                        status = await self._advance(run_id, token, version_hash)
+                    except LeaseLost:
+                        lost = True
+                    finally:
+                        tasks.cancel_scope.cancel()
+            return "locked" if lost else status
+        finally:
+            self.store.release_lease(run_id, token)
+
+    async def _advance(self, run_id: str, token: str, version_hash: str) -> str:
         run = self.store.get_run(run_id)
         wf = self._wf(run)
         ctx: RunContext = self.context_factory(run, wf)
-        self.store.update_run(run_id, status="running")
+        ctx.store = FencedStore(self.store, token)
+        if run.version_hash != version_hash:
+            return self._finish(
+                ctx, "blocked", "workflow code/configuration/runtime changed; use the original runtime to resume"
+            )
+        ctx.store.update_run(run_id, status="running")
         completed, compensated = {}, set()
         for ev in self.store.events(run_id):
             if ev.type == "step_completed":
@@ -163,13 +245,13 @@ class Executor:
             elif ev.type == "flag":
                 ctx.flags.append(ev.payload["flag"])
         if not completed:
-            self.store.append(
+            ctx.store.append(
                 run_id,
                 "run_started",
-                payload={"workflow": wf.name, "version": wf.version, "version_hash": wf.version_hash, "owner": self.owner},
+                payload={"workflow": wf.name, "version": wf.version, "version_hash": version_hash, "owner": self.owner},
             )
         else:
-            self.store.append(run_id, "run_resumed", payload={"owner": self.owner, "replayed_steps": list(completed)})
+            ctx.store.append(run_id, "run_resumed", payload={"owner": self.owner, "replayed_steps": list(completed)})
         with ctx.tracer.run_span(run, wf) as span:
             async with ctx.tools.session():
                 status = await self._steps(ctx, wf, completed, compensated)
@@ -189,40 +271,39 @@ class Executor:
                 continue
             ctx.current_step = step.name
             if step.when is not None and not step.when(ctx):
-                self.store.append(run_id, "step_skipped", step.name)
+                ctx.store.append(run_id, "step_skipped", step.name)
                 completed[step.name] = {"skipped": True}
                 ctx.outputs[step.name] = {"skipped": True}
                 continue
             for attempt in range(1, step.retry.max_attempts + 1):
                 ctx.attempt = attempt
-                self.store.append(run_id, "step_started", step.name, {"attempt": attempt})
+                ctx.store.append(run_id, "step_started", step.name, {"attempt": attempt})
                 t0 = time.perf_counter()
                 try:
                     with ctx.tracer.step_span(step.name, attempt):
                         with anyio.fail_after(step.timeout_s):
                             out = await step.fn(ctx)
                 except WaitForApproval as w:
-                    self.store.append(run_id, "approval_requested", step.name, {"approval_id": w.approval_id})
+                    ctx.store.append(run_id, "approval_requested", step.name, {"approval_id": w.approval_id})
                     self._persist_usage(ctx)
-                    self.store.update_run(run_id, status="waiting_approval")
-                    return "waiting_approval"
+                    return ctx.store.park_approval(run_id, w.approval_id)
                 except Rejected as r:
-                    self.store.append(run_id, "rejected", step.name, {"reason": str(r)})
+                    ctx.store.append(run_id, "rejected", step.name, {"reason": str(r)})
                     ctx.rejected = True
                     completed[step.name] = {"rejected": True}
                     ctx.outputs[step.name] = {"rejected": True}
                     break
                 except BudgetExceeded as b:
-                    self.store.append(run_id, "budget_exceeded", step.name, b.details)
+                    ctx.store.append(run_id, "budget_exceeded", step.name, b.details)
                     await self._compensate(ctx, wf, completed, compensated, reason="budget")
                     return self._finish(ctx, "budget_exceeded", str(b))
                 except PolicyViolation as p:
-                    self.store.append(run_id, "policy_violation", step.name, {"reason": str(p)})
+                    ctx.store.append(run_id, "policy_violation", step.name, {"reason": str(p)})
                     await self._compensate(ctx, wf, completed, compensated, reason="policy")
                     return self._finish(ctx, "blocked", str(p))
                 except step.retry.retry_on as e:
                     retry = attempt < step.retry.max_attempts
-                    self.store.append(
+                    ctx.store.append(
                         run_id,
                         "step_failed",
                         step.name,
@@ -233,8 +314,10 @@ class Executor:
                         continue
                     await self._compensate(ctx, wf, completed, compensated, reason="failure")
                     return self._finish(ctx, "failed", f"{step.name}: {_err(e)}")
+                except LeaseLost:
+                    raise
                 except Exception as e:  # noqa: BLE001 - non-retryable step failure
-                    self.store.append(
+                    ctx.store.append(
                         run_id, "step_failed", step.name, {"attempt": attempt, "error": _err(e), "retry": False}
                     )
                     await self._compensate(ctx, wf, completed, compensated, reason="failure")
@@ -246,7 +329,7 @@ class Executor:
                     if not os.path.exists(marker):
                         open(marker, "w").close()
                         os._exit(17)
-                self.store.append(
+                ctx.store.append(
                     run_id,
                     "step_completed",
                     step.name,
@@ -254,7 +337,6 @@ class Executor:
                 )
                 completed[step.name] = out
                 ctx.outputs[step.name] = out
-                self.store.acquire_lease(run_id, self.owner, self.lease_s)  # renew
                 self._persist_usage(ctx)
                 break
         if ctx.rejected:
@@ -271,17 +353,19 @@ class Executor:
             ctx.current_step = f"{step.name}.compensate"
             try:
                 res = await step.compensate(ctx, out)
-                self.store.append(ctx.run_id, "compensated", step.name, {"reason": reason, "result": res})
+                ctx.store.append(ctx.run_id, "compensated", step.name, {"reason": reason, "result": res})
+            except LeaseLost:
+                raise
             except Exception as e:  # noqa: BLE001
-                self.store.append(ctx.run_id, "compensation_failed", step.name, {"error": _err(e)})
+                ctx.store.append(ctx.run_id, "compensation_failed", step.name, {"error": _err(e)})
                 ctx.flags.append(f"compensation_failed:{step.name}")
 
     def _persist_usage(self, ctx: RunContext) -> None:
-        self.store.update_run(ctx.run_id, usage=ctx.budget.usage(), flags=sorted(set(ctx.flags)))
+        ctx.store.update_run(ctx.run_id, usage=ctx.budget.usage(), flags=sorted(set(ctx.flags)))
 
     def _finish(self, ctx: RunContext, status: str, error: str | None) -> str:
-        self.store.append(ctx.run_id, "run_finished", payload={"status": status, "error": error})
-        self.store.update_run(
+        ctx.store.append(ctx.run_id, "run_finished", payload={"status": status, "error": error})
+        ctx.store.update_run(
             ctx.run_id,
             status=status,
             error=error,

@@ -20,12 +20,18 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     create_engine,
     func,
     select,
     update,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+
+class LeaseLost(RuntimeError):
+    """The invocation no longer owns a live execution lease."""
+
 
 TERMINAL = {"succeeded", "failed", "cancelled", "rejected", "budget_exceeded", "blocked"}
 
@@ -106,13 +112,42 @@ class Store:
         with self.Session() as s:
             return s.get(RunRow, run_id)
 
-    def update_run(self, run_id: str, **fields) -> None:
+    def update_run(self, run_id: str, *, execution_owner: str | None = None, **fields) -> None:
         with self.Session() as s:
+            self._guard_owner(s, run_id, execution_owner)
             s.execute(update(RunRow).where(RunRow.id == run_id).values(**fields))
             s.commit()
 
+    def request_cancel(self, run_id: str) -> None:
+        with self.Session() as s:
+            s.execute(
+                update(RunRow)
+                .where(RunRow.id == run_id, RunRow.status.notin_(TERMINAL))
+                .values(
+                    cancel_requested=True,
+                    status=case((RunRow.status == "waiting_approval", "pending"), else_=RunRow.status),
+                )
+            )
+            s.commit()
+
+    def assert_owner(self, run_id: str, *, execution_owner: str | None = None) -> None:
+        with self.Session() as s:
+            self._guard_owner(s, run_id, execution_owner)
+            s.commit()
+
+    def park_approval(self, run_id: str, approval_id: int, *, execution_owner: str | None = None) -> str:
+        with self.Session() as s:
+            self._guard_owner(s, run_id, execution_owner)
+            approval = s.get(ApprovalRow, approval_id)
+            if approval is None or approval.run_id != run_id:
+                raise KeyError("approval not found")
+            status = "waiting_approval" if approval.status == "pending" else "pending"
+            s.execute(update(RunRow).where(RunRow.id == run_id).values(status=status))
+            s.commit()
+            return status
+
     def acquire_lease(self, run_id: str, owner: str, seconds: float) -> bool:
-        """Compare-and-set lease: free, expired, or already ours."""
+        """Claim a free or expired lease using a unique invocation token."""
         with self.Session() as s:
             t = now()
             res = s.execute(
@@ -120,12 +155,39 @@ class Store:
                 .where(
                     RunRow.id == run_id,
                     RunRow.status.notin_(TERMINAL | {"waiting_approval"}),
-                    (RunRow.lease_owner.is_(None)) | (RunRow.lease_until < t) | (RunRow.lease_owner == owner),
+                    (RunRow.lease_owner.is_(None)) | (RunRow.lease_until < t),
                 )
                 .values(lease_owner=owner, lease_until=t + dt.timedelta(seconds=seconds))
             )
             s.commit()
             return res.rowcount == 1
+
+    def renew_lease(self, run_id: str, owner: str, seconds: float) -> bool:
+        with self.Session() as s:
+            t = now()
+            result = s.execute(
+                update(RunRow)
+                .where(RunRow.id == run_id, RunRow.lease_owner == owner, RunRow.lease_until > t)
+                .values(lease_until=t + dt.timedelta(seconds=seconds))
+            )
+            s.commit()
+            return result.rowcount == 1
+
+    @staticmethod
+    def _guard_owner(session: Session, run_id: str, owner: str | None) -> None:
+        if owner is None:
+            # Administrative events share the sequence allocator with executor events.
+            session.execute(update(RunRow).where(RunRow.id == run_id).values(lease_until=RunRow.lease_until))
+            return
+        # A conditional UPDATE locks the row through the following mutation/commit on
+        # PostgreSQL and SQLite. A separate SELECT would leave a takeover race.
+        result = session.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.lease_owner == owner, RunRow.lease_until > now())
+            .values(lease_until=RunRow.lease_until)
+        )
+        if result.rowcount != 1:
+            raise LeaseLost("execution lease lost")
 
     def release_lease(self, run_id: str, owner: str) -> None:
         with self.Session() as s:
@@ -144,8 +206,17 @@ class Store:
             )
 
     # -- events
-    def append(self, run_id: str, type_: str, step: str | None = None, payload: dict | None = None) -> int:
+    def append(
+        self,
+        run_id: str,
+        type_: str,
+        step: str | None = None,
+        payload: dict | None = None,
+        *,
+        execution_owner: str | None = None,
+    ) -> int:
         with self.Session() as s:
+            self._guard_owner(s, run_id, execution_owner)
             seq = (s.scalar(select(func.max(EventRow.seq)).where(EventRow.run_id == run_id)) or 0) + 1
             s.add(EventRow(run_id=run_id, seq=seq, type=type_, step=step, payload=payload or {}))
             s.commit()
@@ -156,8 +227,11 @@ class Store:
             return list(s.scalars(select(EventRow).where(EventRow.run_id == run_id).order_by(EventRow.seq)))
 
     # -- approvals
-    def request_approval(self, run_id: str, tenant: str, step: str, action: dict) -> int:
+    def request_approval(
+        self, run_id: str, tenant: str, step: str, action: dict, *, execution_owner: str | None = None
+    ) -> int:
         with self.Session() as s:
+            self._guard_owner(s, run_id, execution_owner)
             existing = s.scalars(select(ApprovalRow).where(ApprovalRow.run_id == run_id, ApprovalRow.step == step)).first()
             if existing:
                 return existing.id
@@ -175,6 +249,10 @@ class Store:
             a = s.get(ApprovalRow, approval_id)
             if a is None or a.tenant != tenant:
                 raise KeyError("approval not found")  # cross-tenant decisions look like "not found"
+            # Serialize decisions with parking on the run row; refresh the approval
+            # only after this lock, so a previous decision cannot be overwritten.
+            s.execute(update(RunRow).where(RunRow.id == a.run_id).values(lease_until=RunRow.lease_until))
+            s.refresh(a)
             if a.status != "pending":
                 raise ValueError(f"approval already {a.status}")
             a.status, a.decided_by, a.reason, a.decided_at = ("approved" if approve else "denied"), by, reason, now()
@@ -206,3 +284,29 @@ class Store:
 
 def session_factory(store: Store) -> sessionmaker[Session]:
     return store.Session
+
+
+class FencedStore:
+    """Run-context view: fence executor mutations in their own DB transaction."""
+
+    def __init__(self, store: Store, owner: str):
+        self._store = store
+        self._owner = owner
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def append(self, *args, **kwargs):
+        return self._store.append(*args, execution_owner=self._owner, **kwargs)
+
+    def update_run(self, *args, **kwargs):
+        return self._store.update_run(*args, execution_owner=self._owner, **kwargs)
+
+    def request_approval(self, *args, **kwargs):
+        return self._store.request_approval(*args, execution_owner=self._owner, **kwargs)
+
+    def assert_owner(self, *args, **kwargs):
+        return self._store.assert_owner(*args, execution_owner=self._owner, **kwargs)
+
+    def park_approval(self, *args, **kwargs):
+        return self._store.park_approval(*args, execution_owner=self._owner, **kwargs)

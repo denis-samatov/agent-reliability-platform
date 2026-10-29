@@ -30,7 +30,7 @@ workspace = ["yandex-workspace-mcp @ git+https://github.com/denis-samatov/yandex
 dev = [
   "pytest>=8",
   "ruff>=0.6",
-  "mcp-capguard @ git+https://github.com/denis-samatov/mcp-capguard.git",
+  "mcp-capguard @ git+https://github.com/denis-samatov/mcp-capguard.git@e3a7414a7747745c5a0dbb4d081056b76bfe1dbd",
   "agent-reliability-platform[workspace]",
 ]
 
