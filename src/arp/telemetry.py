@@ -98,7 +98,7 @@ class Tracer:
                 "tenant": run.tenant,
                 "workflow.name": workflow.name,
                 "workflow.version": workflow.version,
-                "workflow.version_hash": workflow.version_hash,
+                "workflow.version_hash": run.version_hash,
             },
         ) as span:
             yield span

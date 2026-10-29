@@ -115,7 +115,7 @@ class ToolGateway:
         step = step or ctx.current_step
         allowed = self.allowlist.get(step.split(".")[0])
         if allowed is not None and tool not in allowed:
-            self.store.append(ctx.run_id, "tool_blocked", step, {"tool": tool, "reason": "not allowed in this step"})
+            ctx.store.append(ctx.run_id, "tool_blocked", step, {"tool": tool, "reason": "not allowed in this step"})
             raise PolicyViolation(f"tool {tool!r} is not allowed in step {step!r}")
         ctx.budget.tool_calls += 1
         ctx.budget.check()
@@ -136,6 +136,9 @@ class ToolGateway:
                 # interrupt an in-flight request (observed with mcp 2.3 in-memory transport).
                 # The outer scope is a backstop with a small margin.
                 with anyio.fail_after(self.timeout_s + 2.0):
+                    # Recheck immediately before dispatch, not only when recording its
+                    # result. Upstream idempotency still covers takeover in flight.
+                    ctx.store.assert_owner(ctx.run_id)
                     result = await client.call_tool(remote_name, args, read_timeout_seconds=self.timeout_s)
             except Exception as e:  # noqa: BLE001 - classify transport-level failures
                 if isinstance(e, TimeoutError) or "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower():
@@ -159,7 +162,7 @@ class ToolGateway:
             flags = screen(json.dumps(data, ensure_ascii=False))
             if flags:
                 ctx.flags.append("injection_in_tool_output")
-                self.store.append(
+                ctx.store.append(
                     ctx.run_id, "flag", step, {"flag": "injection_in_tool_output", "tool": tool, "indicators": flags}
                 )
                 span.set_attribute("security.injection_indicators", len(flags))
@@ -178,4 +181,4 @@ class ToolGateway:
             payload["error"] = error
         if replayed:
             payload["replayed"] = True
-        self.store.append(ctx.run_id, "tool_call", step, payload)
+        ctx.store.append(ctx.run_id, "tool_call", step, payload)

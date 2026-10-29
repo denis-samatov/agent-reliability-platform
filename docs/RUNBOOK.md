@@ -26,3 +26,37 @@ New workflow versions are registered side by side (`it-ticket@vN`); runs keep th
 they started with (version hash recorded per run). Release = route new tickets to the new
 version after `arp eval` shows no regression on the suite; rollback = route back. Runs in
 flight are unaffected.
+
+## Ownership and immutable resume acceptance
+
+`locked` means another invocation owns the run, or ownership was lost; retry only after
+checking its lease and event trail. Do not clear a live lease to force an advance. A live
+heartbeat cannot save a process whose event loop is blocked longer than its lease.
+
+The workflow fingerprint includes the package's Python sources and workflow configuration.
+A run whose recorded hash differs is blocked before any workflow step. Resume it using the
+original pinned runtime/configuration; do not rewrite hashes to force compatibility.
+This protects against silent code changes, but does not replace pinned dependency/model
+artifacts. Existing historical hashes are not retroactively migrated.
+
+Before a consequential release, in an explicitly approved staging environment:
+
+1. Pin code, dependency resolution, model and external-tool versions in a release manifest.
+2. Run `pytest -q`, including overlapping advances, long-step heartbeat, stale-owner writes,
+   process-kill recovery, subject binding and version mismatch checks.
+3. Repeat ownership/reclaim on PostgreSQL with two processes and a deliberately long step;
+   verify one committed completion and durable idempotent effects.
+4. Back up and restore the event database, ITSM effect ledger and traces into an isolated
+   target. Confirm approvals, budgets, versions and completed effects agree before resume.
+5. Verify readiness becomes 503 when the event DB is unavailable. Observe a defined
+   latency/error/recovery budget using the actual authorized IdP/ITSM, not synthetic tools.
+
+Steps 3–5 and third-party idempotency are deployment prerequisites, not claims established
+by the offline tests. Do not edit or regenerate historical `results/` to imply new evidence.
+
+Approval parking and human decisions serialize on the run row. A decision accepted
+before parking leaves the run pending, so another advance can consume it; it cannot
+strand a decided approval in `waiting_approval`. Cancellation changes the current
+row conditionally and cannot resurrect a terminal run. The tool gateway rechecks
+ownership immediately before dispatch; takeover after that check still requires the
+upstream idempotency contract for an already in-flight operation.
