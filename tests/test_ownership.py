@@ -321,3 +321,17 @@ def test_runtime_scan_does_not_block_other_invocations_heartbeat(tmp_path, monke
         assert yielded_to_loop == [True]
 
     anyio.run(scenario)
+
+
+def test_cancellation_before_approval_parking_remains_runnable(tmp_path):
+    from arp.engine.executor import WaitForApproval
+
+    async def step(ctx):
+        aid = ctx.store.request_approval(ctx.run_id, ctx.tenant, "finalize", {})
+        store.request_cancel(ctx.run_id)  # cancellation arrives while the step is running
+        raise WaitForApproval(aid)
+
+    store, rid, engine = setup(tmp_path, step)
+    assert anyio.run(engine.run, rid) == "pending"
+    assert anyio.run(engine.run, rid) == "cancelled"
+    assert store.get_run(rid).status == "cancelled"

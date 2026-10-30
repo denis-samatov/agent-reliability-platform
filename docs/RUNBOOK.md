@@ -60,3 +60,6 @@ strand a decided approval in `waiting_approval`. Cancellation changes the curren
 row conditionally and cannot resurrect a terminal run. The tool gateway rechecks
 ownership immediately before dispatch; takeover after that check still requires the
 upstream idempotency contract for an already in-flight operation.
+
+Cancellation received before approval parking keeps the run pending, so the next
+advance can perform cancellation without waiting for a human approval decision.

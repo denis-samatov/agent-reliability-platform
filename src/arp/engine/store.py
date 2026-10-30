@@ -141,7 +141,8 @@ class Store:
             approval = s.get(ApprovalRow, approval_id)
             if approval is None or approval.run_id != run_id:
                 raise KeyError("approval not found")
-            status = "waiting_approval" if approval.status == "pending" else "pending"
+            run = s.get(RunRow, run_id)
+            status = "waiting_approval" if approval.status == "pending" and not run.cancel_requested else "pending"
             s.execute(update(RunRow).where(RunRow.id == run_id).values(status=status))
             s.commit()
             return status
