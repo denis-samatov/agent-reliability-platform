@@ -1,8 +1,21 @@
 # agent-reliability-platform
 
-**Run LLM agents against enterprise tools so that crashes, retries, prompt injection,
-budgets and human approvals are handled by the platform - and prove it with a
-failure-injection suite.**
+**A durable workflow engine for tool-using LLM agents.** Replay interrupted runs,
+require human approval for selected actions, and compare planners on a synthetic
+failure-injection suite.
+
+<p align="center">
+  <a href="docs/DEMO.md"><img alt="Launch the demo" src="https://img.shields.io/badge/Launch%20the%20demo-1D4ED8?style=for-the-badge" height="32"></a>
+  <a href="#workflow"><img alt="Trace the workflow" src="https://img.shields.io/badge/Trace%20the%20workflow-0F766E?style=for-the-badge" height="32"></a>
+  <a href="results/EVAL.md"><img alt="Read the scenario evaluation" src="https://img.shields.io/badge/Read%20the%20scenario%20evaluation-6D28D9?style=for-the-badge" height="32"></a>
+</p>
+
+<details>
+<summary>What to inspect during a restart</summary>
+
+In the [workflow walkthrough](docs/DEMO.md), watch the event log across an approval and a resumed run. Then read the [worker recovery test](tests/test_recovery.py) to see how the suite checks that retrying after a crash does not create a duplicate ticket.
+
+</details>
 
 | | |
 |---|---|
@@ -33,12 +46,16 @@ events stored in PostgreSQL 17, read-only root FS, non-root user.
 
 ## Workflow
 
-```
-screen -> classify (LocalDesk via MCP) -> plan -> policy -> [approval] -> execute -> verify -> notify -> finalize
-                                           |        |           |            |          |
-                         rules | LLM agent |   deny -> security  waits for   idempotent  compensate
-                         with read tools   |   escalation ticket a human     effects     (revoke) on
-                                                                                         failure/cancel
+```mermaid
+flowchart TD
+    Intake["Screen and classify a ticket"] --> Plan["Plan the next action"]
+    Plan --> Policy{"Policy decision"}
+    Policy -->|Deny| Escalation["Record an escalation"]
+    Policy -->|Approval required| Approval["Wait for a human decision"]
+    Policy -->|Allow| Execute["Execute with an idempotency key"]
+    Approval -->|Approved| Execute
+    Execute --> Verify["Verify and notify"]
+    Verify -->|Failure or cancellation| Compensate["Compensate when defined"]
 ```
 
 * **Durability**: every step writes `step_started` / `step_completed` (with output) to an
