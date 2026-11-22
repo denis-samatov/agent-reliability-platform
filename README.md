@@ -5,7 +5,7 @@ require human approval for selected actions, and compare planners on a synthetic
 failure-injection suite.
 
 <p align="center">
-  <a href="docs/DEMO.md"><img alt="Launch the demo" src="https://img.shields.io/badge/Launch%20the%20demo-1D4ED8?style=for-the-badge" height="32"></a>
+  <a href="docs/DEMO.md#run-the-local-demo"><img alt="Launch the demo" src="https://img.shields.io/badge/Launch%20the%20demo-1D4ED8?style=for-the-badge" height="32"></a>
   <a href="#workflow"><img alt="Trace the workflow" src="https://img.shields.io/badge/Trace%20the%20workflow-0F766E?style=for-the-badge" height="32"></a>
   <a href="results/EVAL.md"><img alt="Read the scenario evaluation" src="https://img.shields.io/badge/Read%20the%20scenario%20evaluation-6D28D9?style=for-the-badge" height="32"></a>
 </p>
@@ -23,13 +23,13 @@ In the [workflow walkthrough](docs/DEMO.md), watch the event log across an appro
 | **For** | Enterprise AI / platform teams (e.g. a cloud or IT-operations group running many agents). |
 | **What** | A durable workflow engine (event log, leases, replay), MCP tool servers built per principal (tenant isolation, scopes), a policy engine and redaction, human approvals, budgets, compensation, OpenTelemetry traces, a dashboard, and an evaluation suite of 21 scenarios run against four workflow versions. |
 | **Reuses** | [`localdesk`](https://github.com/denis-samatov/localdesk) (calibrated ticket classifier, from PyPI) as a tool; [`yandex-workspace-mcp`](https://github.com/denis-samatov/yandex-workspace-mcp) as an external read-only Wiki server; [`mcp-capguard`](https://github.com/denis-samatov/mcp-capguard) to test the tool-exposure boundary per principal; MCP Python SDK 2.3. |
-| **Status** | 34 tests (unit, integration, a real worker-process kill, API tenant isolation). LLM versions use a local Qwen3-1.7B on CPU; see [results/EVAL.md](results/EVAL.md). |
+| **Status** | 54 tests (unit, integration, a real worker-process kill, API tenant isolation). LLM versions use a local Qwen3-1.7B on CPU; see [results/EVAL.md](results/EVAL.md). |
 
 ## Run it
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                                   # 34 tests, no LLM needed
+pytest -q                                   # 54 tests, no LLM service needed
 export ARP_API_KEYS="acme-req:acme:requester,acme-appr:acme:approver"
 arp serve                                   # dashboard at http://127.0.0.1:8095 (paste a key)
 # Optional LLM planner: llama.cpp server with tool-call templates
